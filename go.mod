@@ -1,4 +1,4 @@
-module github.com/YouAreNotDefined/localcli/app
+module github.com/YouAreNotDefined/localchecker
 
 go 1.16
 
