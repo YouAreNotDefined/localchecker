@@ -26,7 +26,7 @@ type Config struct {
 var config Config
 
 var rootCmd = &cobra.Command{
-	Use:   "local",
+	Use:   "localchecker",
 	Short: "Set up an http server",
 	Long:  `This application is a tool to set up an http server`,
 	Run: func(c *cobra.Command, args []string) {
@@ -44,7 +44,7 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "localcli.toml", "config file")
+	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "localchecker.toml", "config file")
 }
 
 func initConfig() {
