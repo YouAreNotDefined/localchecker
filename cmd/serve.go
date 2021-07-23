@@ -65,9 +65,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	if res.Error != nil {
 		fmt.Printf("error: %v\n", res.Error)
 		http.Error(w, "file not found", 404)
-	} else {
-		fmt.Fprint(w, res.Response)
 	}
+
+	fmt.Fprint(w, res.Response)
 }
 
 func rewrite(txt Res, c chan Res) {
@@ -97,21 +97,26 @@ func includeReplace(txt Res, c chan Res) {
 	regInc := regexp.MustCompile(`<!--#include ([a-z]+)="(\S+)" -->`)
 	str := txt.Response
 	resErr := txt.Error
-	buf := []byte(str)
-	res := regInc.FindAllSubmatch(buf, -1)
 
-	if len(res) > 0 && resErr == nil {
-		for _, v := range res {
-			incPath := string(v[2])
-			buf, err := os.ReadFile(incPath)
-			resErr = err
+	for {
+		resBuf := []byte(str)
+		res := regInc.FindAllSubmatch(resBuf, -1)
 
-			if err == nil {
-				incTxt := string(buf)
-				regString := fmt.Sprintf(`<!--#include ([a-z]+)="%s" -->`, incPath)
-				reg := regexp.MustCompile(regString)
-				str = reg.ReplaceAllString(str, incTxt)
+		if len(res) > 0 && resErr == nil {
+			for _, v := range res {
+				incPath := string(v[2])
+				buf, err := os.ReadFile(incPath)
+				resErr = err
+
+				if err == nil {
+					incTxt := string(buf)
+					regString := fmt.Sprintf(`<!--#include ([a-z]+)="%s" -->`, incPath)
+					reg := regexp.MustCompile(regString)
+					str = reg.ReplaceAllString(str, incTxt)
+				}
 			}
+		} else {
+			break
 		}
 	}
 
@@ -139,6 +144,11 @@ func includeIdReplace(txt Res, c chan Res) {
 
 				if resErr == nil {
 					incTxt := string(buf)
+					regBody := regexp.MustCompile(`<body>([\s\S]*)</body>`)
+					resBody := regBody.FindSubmatch(buf)
+					if len(resBody) > 0 {
+						incTxt = string(resBody[1])
+					}
 					incTag := fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, v.K)
 					reg := regexp.MustCompile(incTag)
 					str = reg.ReplaceAllString(str, incTxt)
