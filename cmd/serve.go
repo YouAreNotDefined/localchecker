@@ -23,6 +23,11 @@ type Res struct {
 	Response string
 }
 
+type Necessary struct {
+	include   bool
+	includeId bool
+}
+
 func serve(cmd *cobra.Command, args []string) {
 	port := config.Port
 	http.HandleFunc("/", Handler)
@@ -35,9 +40,11 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	rOther := regexp.MustCompile(`.css|.js|.json`)
 	reqUri := r.RequestURI
 	c := make(chan Res)
+	var res Res
 
 	if rImg.MatchString(reqUri) {
 		go getData(reqUri, c)
+		res = <-c
 
 	} else if rOther.MatchString(reqUri) {
 		if strings.Contains(reqUri, ".css") {
@@ -47,20 +54,26 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		} else if strings.Contains(reqUri, ".json") {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		}
+
 		go getData(reqUri, c)
 		go rewrite(<-c, c)
+		res = <-c
 
 	} else {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
 		go getData(reqUri, c)
-		go rewrite(<-c, c)
-		go includeIdReplace(<-c, c)
-		go includeReplace(<-c, c)
-		go rewrite(<-c, c)
+		res = execute(<-c, c)
+		isContain := isNecessary(res)
 
+		if isContain.include || isContain.includeId {
+			res = execute(res, c)
+			isContain = isNecessary(res)
+		}
+		if isContain.include || isContain.includeId {
+			res = execute(res, c)
+		}
 	}
-
-	res := <-c
 
 	if res.Error != nil {
 		fmt.Printf("error: %v\n", res.Error)
@@ -68,6 +81,15 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fmt.Fprint(w, res.Response)
+}
+
+func execute(data Res, c chan Res) Res {
+	go rewrite(data, c)
+	go includeIdReplace(<-c, c)
+	go includeReplace(<-c, c)
+	go rewrite(<-c, c)
+
+	return <-c
 }
 
 func rewrite(txt Res, c chan Res) {
@@ -97,26 +119,21 @@ func includeReplace(txt Res, c chan Res) {
 	regInc := regexp.MustCompile(`<!--#include ([a-z]+)="(\S+)" -->`)
 	str := txt.Response
 	resErr := txt.Error
+	resBuf := []byte(str)
+	res := regInc.FindAllSubmatch(resBuf, -1)
 
-	for {
-		resBuf := []byte(str)
-		res := regInc.FindAllSubmatch(resBuf, -1)
+	if len(res) > 0 && resErr == nil {
+		for _, v := range res {
+			incPath := string(v[2])
+			buf, err := os.ReadFile(incPath)
+			resErr = err
 
-		if len(res) > 0 && resErr == nil {
-			for _, v := range res {
-				incPath := string(v[2])
-				buf, err := os.ReadFile(incPath)
-				resErr = err
-
-				if err == nil {
-					incTxt := string(buf)
-					regString := fmt.Sprintf(`<!--#include ([a-z]+)="%s" -->`, incPath)
-					reg := regexp.MustCompile(regString)
-					str = reg.ReplaceAllString(str, incTxt)
-				}
+			if err == nil {
+				incTxt := string(buf)
+				regString := fmt.Sprintf(`<!--#include ([a-z]+)="%s" -->`, incPath)
+				reg := regexp.MustCompile(regString)
+				str = reg.ReplaceAllString(str, incTxt)
 			}
-		} else {
-			break
 		}
 	}
 
@@ -182,6 +199,37 @@ func getData(reqURI string, c chan Res) {
 	txt := string(buf)
 
 	c <- Res{Error: err, Response: txt}
+}
+
+func isNecessary(txt Res) Necessary {
+	var necessary Necessary
+	necessary.include = false
+	necessary.includeId = false
+
+	resErr := txt.Error
+	resStr := txt.Response
+	resBuf := []byte(resStr)
+	regInc := regexp.MustCompile(`<!--#include ([a-z]+)="(\S+)" -->`)
+	res := regInc.FindAllSubmatch(resBuf, -1)
+
+	includeId := config.IncludeId
+	resId := [][][][]byte{}
+
+	for _, v := range includeId {
+		regString := fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, v.K)
+		regIncId := regexp.MustCompile(regString)
+		resId = append(resId, regIncId.FindAllSubmatch(resBuf, 1))
+	}
+
+	if resErr == nil {
+		if len(res) > 0 {
+			necessary.include = true
+		} else if len(resId) > 0 {
+			necessary.includeId = true
+		}
+	}
+
+	return necessary
 }
 
 func init() {
