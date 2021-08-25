@@ -28,6 +28,8 @@ type Necessary struct {
 	includeId bool
 }
 
+const ()
+
 func serve(cmd *cobra.Command, args []string) {
 	port := config.Port
 	http.HandleFunc("/", Handler)
@@ -79,6 +81,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("error: %v\n", res.Error)
 		http.Error(w, "file not found", 404)
 	}
+
+	h := r.Header["Accept-Encoding"]
+	fmt.Fprintln(w, h)
 
 	fmt.Fprint(w, res.Response)
 }
@@ -230,6 +235,11 @@ func isNecessary(txt Res) Necessary {
 	}
 
 	return necessary
+}
+
+func detectMimeType(bytes []byte) string {
+	mimeType := http.DetectContentType(bytes)
+	return mimeType
 }
 
 func init() {
