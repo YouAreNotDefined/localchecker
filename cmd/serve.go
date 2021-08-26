@@ -3,8 +3,10 @@ package cmd
 import (
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -18,6 +20,11 @@ var serveCmd = &cobra.Command{
 	Run:   serve,
 }
 
+type Mime struct {
+	contentType string
+	category    string
+}
+
 type Res struct {
 	Error    error
 	Response string
@@ -28,8 +35,6 @@ type Necessary struct {
 	includeId bool
 }
 
-const ()
-
 func serve(cmd *cobra.Command, args []string) {
 	port := config.Port
 	http.HandleFunc("/", Handler)
@@ -38,42 +43,30 @@ func serve(cmd *cobra.Command, args []string) {
 }
 
 func Handler(w http.ResponseWriter, r *http.Request) {
-	rImg := regexp.MustCompile(`.png|.jpg|.svg|.gif|.webp|.ico`)
-	rOther := regexp.MustCompile(`.css|.js|.json`)
 	reqUri := r.RequestURI
+	mime := mimeTypeForFile(reqUri)
+	mimeType := fmt.Sprintf(`%s; charset=utf-8`, mime.contentType)
 	c := make(chan Res)
 	var res Res
 
-	if rImg.MatchString(reqUri) {
+	switch mime.category {
+	case "html":
 		go getData(reqUri, c)
 		res = <-c
-
-	} else if rOther.MatchString(reqUri) {
-		if strings.Contains(reqUri, ".css") {
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		} else if strings.Contains(reqUri, ".js") {
-			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-		} else if strings.Contains(reqUri, ".json") {
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		}
-
+	case "asset":
 		go getData(reqUri, c)
 		go rewrite(<-c, c)
 		res = <-c
-
-	} else {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-
+	case "other":
 		go getData(reqUri, c)
-		res = execute(<-c, c)
+		res = executeRoutine(<-c, c)
 		isContain := isNecessary(res)
-
 		if isContain.include || isContain.includeId {
-			res = execute(res, c)
+			res = executeRoutine(res, c)
 			isContain = isNecessary(res)
 		}
 		if isContain.include || isContain.includeId {
-			res = execute(res, c)
+			res = executeRoutine(res, c)
 		}
 	}
 
@@ -82,19 +75,32 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "file not found", 404)
 	}
 
-	h := r.Header["Accept-Encoding"]
-	fmt.Fprintln(w, h)
-
+	w.Header().Set("Content-Type", mimeType)
 	fmt.Fprint(w, res.Response)
 }
 
-func execute(data Res, c chan Res) Res {
+func executeRoutine(data Res, c chan Res) Res {
 	go rewrite(data, c)
 	go includeIdReplace(<-c, c)
 	go includeReplace(<-c, c)
 	go rewrite(<-c, c)
-
 	return <-c
+}
+
+func mimeTypeForFile(file string) Mime {
+	ext := filepath.Ext(file)
+	switch ext {
+	case ".htm", ".html":
+		return Mime{contentType: "text/html", category: "html"}
+	case ".css":
+		return Mime{contentType: "text/css", category: "asset"}
+	case ".js":
+		return Mime{contentType: "application/javascript", category: "asset"}
+	case ".json":
+		return Mime{contentType: "application/json", category: "asset"}
+	default:
+		return Mime{contentType: mime.TypeByExtension(ext), category: "other"}
+	}
 }
 
 func rewrite(txt Res, c chan Res) {
@@ -207,16 +213,13 @@ func getData(reqURI string, c chan Res) {
 }
 
 func isNecessary(txt Res) Necessary {
-	var necessary Necessary
-	necessary.include = false
-	necessary.includeId = false
-
+	isNecessaryInc := false
+	isNecessaryIncId := false
 	resErr := txt.Error
 	resStr := txt.Response
 	resBuf := []byte(resStr)
 	regInc := regexp.MustCompile(`<!--#include ([a-z]+)="(\S+)" -->`)
 	res := regInc.FindAllSubmatch(resBuf, -1)
-
 	includeId := config.IncludeId
 	resId := [][][][]byte{}
 
@@ -228,18 +231,13 @@ func isNecessary(txt Res) Necessary {
 
 	if resErr == nil {
 		if len(res) > 0 {
-			necessary.include = true
+			isNecessaryInc = true
 		} else if len(resId) > 0 {
-			necessary.includeId = true
+			isNecessaryIncId = true
 		}
 	}
 
-	return necessary
-}
-
-func detectMimeType(bytes []byte) string {
-	mimeType := http.DetectContentType(bytes)
-	return mimeType
+	return Necessary{include: isNecessaryInc, includeId: isNecessaryIncId}
 }
 
 func init() {
