@@ -16,7 +16,7 @@ func (r *Routine) executeRoutine(res Res, c chan Res) Res {
 	isContain := r.isNecessary(<-c)
 
 	for isContain.Include || isContain.IncludeId {
-		go res.rewrite(<-c, c)
+		go res.rewrite(res, c)
 		go res.includeIdReplace(<-c, c)
 		go res.includeReplace(<-c, c)
 	}
@@ -24,27 +24,27 @@ func (r *Routine) executeRoutine(res Res, c chan Res) Res {
 	return <-c
 }
 
-func (r *Routine) isNecessary(txt Res) *Routine {
-	resErr := txt.Error
-	resStr := txt.Response
+func (r *Routine) isNecessary(res Res) *Routine {
+	resStr := res.Response
 	resBuf := []byte(resStr)
-	regInc := regexp.MustCompile(`<!--#include ([a-z]+)="(\S+)" -->`)
-	res := regInc.FindAllSubmatch(resBuf, -1)
 	includeId := config.IncludeId
-	resId := [][][][]byte{}
+	idMatched := [][][][]byte{}
 
-	for _, v := range includeId {
-		regString := fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, v.K)
-		regIncId := regexp.MustCompile(regString)
-		resId = append(resId, regIncId.FindAllSubmatch(resBuf, 1))
+	if len(includeId) > 0 {
+		for _, v := range includeId {
+			regString := fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, v.K)
+			regIncId := regexp.MustCompile(regString)
+			idMatched = append(idMatched, regIncId.FindAllSubmatch(resBuf, 1))
+		}
 	}
 
-	if resErr == nil {
-		if len(res) == 0 {
-			r.Include = false
-		} else if len(resId) == 0 {
-			r.IncludeId = false
-		}
+	regInc := regexp.MustCompile(`<!--#include ([a-z]+)="(\S+)" -->`)
+	incMatched := regInc.FindAllSubmatch(resBuf, -1)
+
+	if len(incMatched) == 0 {
+		r.Include = false
+	} else if len(idMatched) == 0 {
+		r.IncludeId = false
 	}
 
 	return &Routine{Include: r.Include, IncludeId: r.IncludeId}

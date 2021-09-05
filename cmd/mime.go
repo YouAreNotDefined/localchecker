@@ -27,6 +27,6 @@ func mimeTypeForFile(file string) Mime {
 		return Mime{ContentType: "application/json", Category: "asset"}
 
 	default:
-		return Mime{ContentType: mime.TypeByExtension(ext), Category: "other"}
+		return Mime{ContentType: mime.TypeByExtension(ext), Category: ""}
 	}
 }
