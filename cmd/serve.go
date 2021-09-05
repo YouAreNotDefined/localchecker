@@ -43,7 +43,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 	if res.Error != nil {
 		http.Error(w, res.Error.Error(), 404)
-		log.Fatal(res.Error)
+		fmt.Printf("error: %v\n", res.Error)
 	}
 
 	switch mime.Category {
@@ -151,7 +151,11 @@ func (res *Res) includeIdReplace(c chan *Res) {
 func getData(reqURI string, c chan *Res) {
 	alternate := config.Alternate
 
-	if reqURI == "/" {
+	isDir, err := dirExist(reqURI)
+
+	handleErr(err)
+
+	if isDir {
 		reqURI = "." + reqURI + "index.html"
 	} else {
 		reqURI = "." + reqURI
@@ -173,6 +177,23 @@ func getData(reqURI string, c chan *Res) {
 	txt := string(buf)
 
 	c <- &Res{Error: err, Response: txt}
+}
+
+func dirExist(path string) (bool, error) {
+	info, err := os.Stat(path)
+
+	if err != nil {
+		if !os.IsExist(err) {
+			return false, nil
+		} else {
+			return false, err
+		}
+	} else {
+		if !info.IsDir() {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func handleErr(err error) {
