@@ -34,29 +34,32 @@ func serve(cmd *cobra.Command, args []string) {
 func Handler(w http.ResponseWriter, r *http.Request) {
 	reqUri := r.RequestURI
 	mime := mimeTypeForFile(reqUri)
-	c := make(chan Res)
+	c := make(chan *Res)
 
-	routine := Routine{Include: true, IncludeId: true}
-	var res Res
+	var res *Res
 
-	go res.getData(reqUri, c)
+	go getData(reqUri, c)
 	res = <-c
 
 	if res.Error != nil {
 		http.Error(w, res.Error.Error(), 404)
-		fmt.Fprint(w, res.Error)
+		log.Fatal(res.Error)
 	}
 
 	switch mime.Category {
 	case "html":
-		res = routine.executeRoutine(res, c)
+		go res.rewrite(c)
+		routine := Routine{Response: <-c, Include: true, IncludeId: true}
+
+		for routine.Include && routine.IncludeId {
+			go routine.run(c)
+			res = <-c
+		}
 
 	case "asset":
-		go res.rewrite(res, c)
+		go res.rewrite(c)
 		res = <-c
 	}
-
-	handleErr(res.Error)
 
 	mimeType := fmt.Sprintf(`%s; charset=utf-8`, mime.ContentType)
 
@@ -64,7 +67,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, res.Response)
 }
 
-func (r *Res) rewrite(res Res, c chan Res) {
+func (res *Res) rewrite(c chan *Res) {
 	path := config.Path
 	str := res.Response
 	buf := []byte(str)
@@ -84,10 +87,10 @@ func (r *Res) rewrite(res Res, c chan Res) {
 		}
 	}
 
-	c <- Res{Error: res.Error, Response: str}
+	c <- &Res{Error: res.Error, Response: str}
 }
 
-func (r *Res) includeReplace(res Res, c chan Res) {
+func (res *Res) includeReplace(c chan *Res) {
 	regInc := regexp.MustCompile(`<!--#include ([a-z]+)="(\S+)" -->`)
 	str := res.Response
 	resBuf := []byte(str)
@@ -107,10 +110,10 @@ func (r *Res) includeReplace(res Res, c chan Res) {
 		}
 	}
 
-	c <- Res{Error: res.Error, Response: str}
+	c <- &Res{Error: res.Error, Response: str}
 }
 
-func (r *Res) includeIdReplace(res Res, c chan Res) {
+func (res *Res) includeIdReplace(c chan *Res) {
 	includeId := config.IncludeId
 	str := res.Response
 	resBuf := []byte(str)
@@ -142,10 +145,10 @@ func (r *Res) includeIdReplace(res Res, c chan Res) {
 		}
 	}
 
-	c <- Res{Error: res.Error, Response: str}
+	c <- &Res{Error: res.Error, Response: str}
 }
 
-func (r *Res) getData(reqURI string, c chan Res) *Res {
+func getData(reqURI string, c chan *Res) {
 	alternate := config.Alternate
 
 	if reqURI == "/" {
@@ -169,12 +172,13 @@ func (r *Res) getData(reqURI string, c chan Res) *Res {
 
 	txt := string(buf)
 
-	return &Res{Error: err, Response: txt}
+	c <- &Res{Error: err, Response: txt}
 }
 
 func handleErr(err error) {
 	if err != nil {
 		fmt.Printf("error: %v\n", err)
+		return
 	}
 }
 
