@@ -32,7 +32,7 @@ func serve(cmd *cobra.Command, args []string) {
 }
 
 func Handler(w http.ResponseWriter, r *http.Request) {
-	reqUri := r.RequestURI
+	reqUri := joinIndex(r.RequestURI)
 	mime := mimeTypeForFile(reqUri)
 	c := make(chan *Res)
 
@@ -151,15 +151,7 @@ func (res *Res) includeIdReplace(c chan *Res) {
 func getData(reqURI string, c chan *Res) {
 	alternate := config.Alternate
 
-	isDir, err := dirExist(reqURI)
-
-	handleErr(err)
-
-	if isDir {
-		reqURI = "." + reqURI + "index.html"
-	} else {
-		reqURI = "." + reqURI
-	}
+	reqURI = fmt.Sprintf(`.%s`, reqURI)
 
 	if len(alternate) > 0 {
 		for _, v := range alternate {
@@ -177,6 +169,18 @@ func getData(reqURI string, c chan *Res) {
 	txt := string(buf)
 
 	c <- &Res{Error: err, Response: txt}
+}
+
+func joinIndex(reqURI string) string {
+	isDir, err := dirExist(reqURI)
+
+	handleErr(err)
+
+	if isDir {
+		reqURI = fmt.Sprintf(`%sindex.html`, reqURI)
+	}
+
+	return reqURI
 }
 
 func dirExist(path string) (bool, error) {
