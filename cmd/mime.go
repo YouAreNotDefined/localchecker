@@ -14,7 +14,7 @@ func mimeTypeForFile(file string) Mime {
 	ext := filepath.Ext(file)
 
 	switch ext {
-	case "", "html":
+	case ".html", "html":
 		return Mime{ContentType: "text/html", Category: "html"}
 
 	case "css":

@@ -180,6 +180,8 @@ func getData(reqURI string, c chan *Res) {
 }
 
 func dirExist(path string) (bool, error) {
+	currentDir, _ := os.Getwd()
+	path = fmt.Sprintf(`%s%s`, currentDir, path)
 	info, err := os.Stat(path)
 
 	if err != nil {
