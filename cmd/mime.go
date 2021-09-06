@@ -17,13 +17,13 @@ func mimeTypeForFile(file string) Mime {
 	case ".html", "html":
 		return Mime{ContentType: "text/html", Category: "html"}
 
-	case "css":
+	case ".css", "css":
 		return Mime{ContentType: "text/css", Category: "asset"}
 
-	case "js":
+	case ".js", "js":
 		return Mime{ContentType: "application/javascript", Category: "asset"}
 
-	case "json":
+	case ".json", "json":
 		return Mime{ContentType: "application/json", Category: "asset"}
 
 	default:
