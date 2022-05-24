@@ -50,36 +50,41 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	if err := isDirExist(r.RequestURI); err == nil {
 		reqURI = fmt.Sprintf(`%sindex.html`, r.RequestURI)
 	} else {
-		http.Error(w, fmt.Sprintf("Error: %v", err), 500)
-		handleErr(err)
+		handleErr(w, err)
 	}
 
 	ext := filepath.Ext(reqURI)
 	mimeType := mime.TypeByExtension(ext)
 	mediatype, _, err := mime.ParseMediaType(mimeType)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error: %v", err), 500)
-		handleErr(err)
+		handleErr(w, err)
 	}
 
 	go getData(reqURI, c)
 	res = <-c
 
 	if res.Error != nil {
-		http.Error(w, fmt.Sprintf("Error: %v", res.Error.Error()), 500)
-		handleErr(res.Error)
+		handleErr(w, res.Error)
 	}
 
 	switch mediatype {
 	case HtmlType:
 		go res.rewrite(c)
-		routine := Routine{Response: <-c, Include: true, IncludeId: true}
+		res = <-c
+		replaceIncludeTag, replaceIncludeId := res.needsReplace()
 
-		for routine.Include && routine.IncludeId {
-			go routine.run(c)
+		for replaceIncludeTag || replaceIncludeId {
+			if replaceIncludeTag {
+				go res.ReplaceIncludeTag(c)
+			} else {
+				go res.ReplaceIncludeId(c)
+			}
 			res = <-c
-		}
 
+			go res.rewrite(c)
+			res = <-c
+			replaceIncludeTag, replaceIncludeId = res.needsReplace()
+		}
 	case JsType, JsonType:
 		go res.rewrite(c)
 		res = <-c
@@ -156,9 +161,6 @@ func (res *Response) ReplaceIncludeId(c chan *Response) {
 	if len(includeId) > 0 && len(incMatched) > 0 {
 		for _, v := range includeId {
 			buf, err = os.ReadFile(v.V)
-
-			handleErr(err)
-
 			incTxt := string(buf)
 			regBody := regexp.MustCompile(`<body>([\s\S]*)</body>`)
 			resBody := regBody.FindSubmatch(buf)
@@ -214,8 +216,38 @@ func isDirExist(path string) error {
 	return nil
 }
 
-func handleErr(err error) {
+func (res *Response) needsReplace() (bool, bool) {
+	resStr := res.Body
+	resBuf := []byte(resStr)
+	includeId := config.IncludeId
+	idMatched := [][][][]byte{}
+
+	if len(includeId) > 0 {
+		for _, v := range includeId {
+			regString := makeIncludeTag(v.K)
+			regIncId := regexp.MustCompile(regString)
+			idMatched = append(idMatched, regIncId.FindAllSubmatch(resBuf, 1))
+		}
+	}
+
+	regInc := regexp.MustCompile(IncludeTagReg)
+	incMatched := regInc.FindAllSubmatch(resBuf, -1)
+
+	// return need to do ReplaceIncludeTag(), ReplaceIncludeId()
+	if len(incMatched) == 0 && len(idMatched) == 0 {
+		return false, false
+	} else if len(incMatched) == 0 {
+		return false, true
+	} else if len(idMatched) == 0 {
+		return true, false
+	} else {
+		return true, true
+	}
+}
+
+func handleErr(w http.ResponseWriter, err error) {
 	if err != nil {
+		http.Error(w, err.Error(), 500)
 		log.Printf("Error: %v\n", err)
 	}
 }
