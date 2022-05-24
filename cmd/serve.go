@@ -76,10 +76,14 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		for replaceIncludeTag || replaceIncludeId {
 			if replaceIncludeTag {
 				go res.ReplaceIncludeTag(c)
-			} else {
+			}
+			if replaceIncludeId {
 				go res.ReplaceIncludeId(c)
 			}
 			res = <-c
+			if res.Error != nil {
+				log.Printf("Error: %v\n", err)
+			}
 
 			go res.rewrite(c)
 			res = <-c
@@ -139,7 +143,7 @@ func (res *Response) ReplaceIncludeTag(c chan *Response) {
 		}
 	}
 
-	c <- &Response{Error: err, Body: str}
+	c <- &Response{Error: fmt.Errorf("failed to Response.ReplaceIncludeTag: %w", err), Body: str}
 }
 
 func (res *Response) ReplaceIncludeId(c chan *Response) {
@@ -175,7 +179,7 @@ func (res *Response) ReplaceIncludeId(c chan *Response) {
 		}
 	}
 
-	c <- &Response{Error: err, Body: str}
+	c <- &Response{Error: fmt.Errorf("failed to Response.ReplaceIncludeId: %w", err), Body: str}
 }
 
 func getData(reqURI string, c chan *Response) {
