@@ -3,8 +3,10 @@ package cmd
 import (
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -18,36 +20,58 @@ var serveCmd = &cobra.Command{
 	Run:   serve,
 }
 
-type Res struct {
-	Error    error
-	Response string
+const (
+	HtmlType      = "text/html"
+	JsType        = "application/javascript"
+	JsonType      = "application/json"
+	IncludeTagReg = `<!--#include ([a-z]+)="(\S+)" -->`
+)
+
+type Response struct {
+	Error error
+	Body  string
 }
 
 func serve(cmd *cobra.Command, args []string) {
 	port := config.Port
 
-	http.HandleFunc("/", Handler)
+	http.HandleFunc("/", handler)
 	log.Printf("Server listening on http://localhost:%s/", port)
 	log.Print(http.ListenAndServe(":"+port, nil))
 }
 
-func Handler(w http.ResponseWriter, r *http.Request) {
-	reqUri := joinIndex(r.RequestURI)
-	mime := mimeTypeForFile(reqUri)
-	c := make(chan *Res)
+func handler(w http.ResponseWriter, r *http.Request) {
+	var (
+		reqURI string
+		res    *Response
+	)
+	c := make(chan *Response)
 
-	var res *Res
+	if err := isDirExist(r.RequestURI); err == nil {
+		reqURI = fmt.Sprintf(`%sindex.html`, r.RequestURI)
+	} else {
+		http.Error(w, fmt.Sprintf("Error: %v", err), 500)
+		handleErr(err)
+	}
 
-	go getData(reqUri, c)
+	ext := filepath.Ext(reqURI)
+	mimeType := mime.TypeByExtension(ext)
+	mediatype, _, err := mime.ParseMediaType(mimeType)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error: %v", err), 500)
+		handleErr(err)
+	}
+
+	go getData(reqURI, c)
 	res = <-c
 
 	if res.Error != nil {
-		http.Error(w, res.Error.Error(), 404)
-		fmt.Printf("error: %v\n", res.Error)
+		http.Error(w, fmt.Sprintf("Error: %v", res.Error.Error()), 500)
+		handleErr(res.Error)
 	}
 
-	switch mime.Category {
-	case "html":
+	switch mediatype {
+	case HtmlType:
 		go res.rewrite(c)
 		routine := Routine{Response: <-c, Include: true, IncludeId: true}
 
@@ -56,20 +80,18 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 			res = <-c
 		}
 
-	case "asset":
+	case JsType, JsonType:
 		go res.rewrite(c)
 		res = <-c
 	}
 
-	mimeType := fmt.Sprintf(`%s; charset=utf-8`, mime.ContentType)
-
 	w.Header().Set("Content-Type", mimeType)
-	fmt.Fprint(w, res.Response)
+	fmt.Fprint(w, res.Body)
 }
 
-func (res *Res) rewrite(c chan *Res) {
+func (res *Response) rewrite(c chan *Response) {
 	path := config.Path
-	str := res.Response
+	str := res.Body
 	buf := []byte(str)
 
 	if len(path) > 0 {
@@ -87,21 +109,23 @@ func (res *Res) rewrite(c chan *Res) {
 		}
 	}
 
-	c <- &Res{Error: res.Error, Response: str}
+	c <- &Response{Error: nil, Body: str}
 }
 
-func (res *Res) includeReplace(c chan *Res) {
-	regInc := regexp.MustCompile(`<!--#include ([a-z]+)="(\S+)" -->`)
-	str := res.Response
+func (res *Response) ReplaceIncludeTag(c chan *Response) {
+	var (
+		err error
+		buf []byte
+	)
+	regInc := regexp.MustCompile(IncludeTagReg)
+	str := res.Body
 	resBuf := []byte(str)
 	incMatched := regInc.FindAllSubmatch(resBuf, -1)
 
 	if len(incMatched) > 0 {
 		for _, v := range incMatched {
 			incPath := string(v[2])
-			buf, err := os.ReadFile(incPath)
-
-			handleErr(err)
+			buf, err = os.ReadFile(incPath)
 
 			incTxt := string(buf)
 			regString := fmt.Sprintf(`<!--#include ([a-z]+)="%s" -->`, incPath)
@@ -110,24 +134,28 @@ func (res *Res) includeReplace(c chan *Res) {
 		}
 	}
 
-	c <- &Res{Error: res.Error, Response: str}
+	c <- &Response{Error: err, Body: str}
 }
 
-func (res *Res) includeIdReplace(c chan *Res) {
+func (res *Response) ReplaceIncludeId(c chan *Response) {
+	var (
+		err error
+		buf []byte
+	)
 	includeId := config.IncludeId
-	str := res.Response
+	str := res.Body
 	resBuf := []byte(str)
 	incMatched := [][][][]byte{}
 
 	for _, v := range includeId {
-		regString := fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, v.K)
+		regString := makeIncludeTag(v.K)
 		regInc := regexp.MustCompile(regString)
 		incMatched = append(incMatched, regInc.FindAllSubmatch(resBuf, 1))
 	}
 
 	if len(includeId) > 0 && len(incMatched) > 0 {
 		for _, v := range includeId {
-			buf, err := os.ReadFile(v.V)
+			buf, err = os.ReadFile(v.V)
 
 			handleErr(err)
 
@@ -139,18 +167,17 @@ func (res *Res) includeIdReplace(c chan *Res) {
 				incTxt = string(resBody[1])
 			}
 
-			incTag := fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, v.K)
+			incTag := makeIncludeTag(v.K)
 			reg := regexp.MustCompile(incTag)
 			str = reg.ReplaceAllString(str, incTxt)
 		}
 	}
 
-	c <- &Res{Error: res.Error, Response: str}
+	c <- &Response{Error: err, Body: str}
 }
 
-func getData(reqURI string, c chan *Res) {
+func getData(reqURI string, c chan *Response) {
 	alternate := config.Alternate
-
 	reqURI = fmt.Sprintf(`.%s`, reqURI)
 
 	if len(alternate) > 0 {
@@ -163,50 +190,38 @@ func getData(reqURI string, c chan *Res) {
 	}
 
 	buf, err := os.ReadFile(reqURI)
-
-	handleErr(err)
-
 	txt := string(buf)
 
-	c <- &Res{Error: err, Response: txt}
+	c <- &Response{Error: err, Body: txt}
 }
 
-func joinIndex(reqURI string) string {
-	isDir, err := dirExist(reqURI)
-
-	handleErr(err)
-
-	if isDir {
-		reqURI = fmt.Sprintf(`%sindex.html`, reqURI)
-	}
-
-	return reqURI
-}
-
-func dirExist(path string) (bool, error) {
+func isDirExist(path string) error {
 	currentDir, _ := os.Getwd()
 	path = fmt.Sprintf(`%s%s`, currentDir, path)
 	info, err := os.Stat(path)
 
 	if err != nil {
 		if !os.IsExist(err) {
-			return false, nil
+			return nil
 		} else {
-			return false, err
+			return err
 		}
 	} else {
 		if !info.IsDir() {
-			return false, nil
+			return nil
 		}
 	}
-	return true, nil
+	return nil
 }
 
 func handleErr(err error) {
 	if err != nil {
-		fmt.Printf("error: %v\n", err)
-		return
+		log.Printf("Error: %v\n", err)
 	}
+}
+
+func makeIncludeTag(value string) string {
+	return fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, value)
 }
 
 func init() {

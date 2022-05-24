@@ -1,24 +1,23 @@
 package cmd
 
 import (
-	"fmt"
 	"regexp"
 )
 
 type Routine struct {
-	Response  *Res
+	Response  *Response
 	Include   bool
 	IncludeId bool
 }
 
-func (r *Routine) run(c chan *Res) {
+func (r *Routine) run(c chan *Response) {
 	go r.Response.rewrite(c)
 	r.Response = <-c
 
-	go r.Response.includeReplace(c)
+	go r.Response.ReplaceIncludeTag(c)
 	r.Response = <-c
 
-	go r.Response.includeIdReplace(c)
+	go r.Response.ReplaceIncludeId(c)
 	r.Response = <-c
 
 	r.isNecessary()
@@ -27,20 +26,20 @@ func (r *Routine) run(c chan *Res) {
 }
 
 func (r *Routine) isNecessary() *Routine {
-	resStr := r.Response.Response
+	resStr := r.Response.Body
 	resBuf := []byte(resStr)
 	includeId := config.IncludeId
 	idMatched := [][][][]byte{}
 
 	if len(includeId) > 0 {
 		for _, v := range includeId {
-			regString := fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, v.K)
+			regString := makeIncludeTag(v.K)
 			regIncId := regexp.MustCompile(regString)
 			idMatched = append(idMatched, regIncId.FindAllSubmatch(resBuf, 1))
 		}
 	}
 
-	regInc := regexp.MustCompile(`<!--#include ([a-z]+)="(\S+)" -->`)
+	regInc := regexp.MustCompile(IncludeTagReg)
 	incMatched := regInc.FindAllSubmatch(resBuf, -1)
 
 	if len(incMatched) == 0 && len(idMatched) == 0 {
