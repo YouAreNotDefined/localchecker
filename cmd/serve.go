@@ -22,6 +22,7 @@ var serveCmd = &cobra.Command{
 
 const (
 	HtmlType        = "text/html"
+	CssType         = "text/css"
 	JsType          = "application/javascript"
 	JsonType        = "application/json"
 	IncludeTagRegex = `<!--#include ([a-z]+)="(\S+)" -->`
@@ -81,7 +82,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 			res = <-c
 			needsReplaceIncTag, needsReplaceIncId = res.needsReplace()
 		}
-	case JsType, JsonType:
+	case CssType, JsType, JsonType:
 		go res.rewrite(c)
 		res = <-c
 	}
@@ -252,8 +253,8 @@ func (res *Response) needsReplace() (bool, bool) {
 	}
 }
 
-func isNotFileExist(path string) bool {
-	_, err := os.Stat(path)
+func isNotFileExist(URI string) bool {
+	_, err := os.Stat(URI)
 	return os.IsNotExist(err)
 }
 
