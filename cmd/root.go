@@ -11,16 +11,16 @@ import (
 
 var cfgFile string
 
-type BaseMapConfig struct {
+type CfgMap struct {
 	K string `toml:"K"`
 	V string `toml:"V"`
 }
 
 type Config struct {
-	Port      string          `toml:"Port"`
-	Path      []BaseMapConfig `toml:"Path"`
-	IncludeId []BaseMapConfig `toml:"IncludeId"`
-	Alternate []BaseMapConfig `toml:"Alternate"`
+	Port      string   `toml:"Port"`
+	Path      []CfgMap `toml:"Path"`
+	IncludeId []CfgMap `toml:"IncludeId"`
+	Alternate []CfgMap `toml:"Alternate,omitempty"`
 }
 
 var config Config

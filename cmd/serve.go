@@ -3,8 +3,10 @@ package cmd
 import (
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -14,176 +16,184 @@ import (
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start up the http server. File names can be omitted.",
-	Long:  `Start up the http server. File names can be omitted.`,
+	Long:  "Start up the http server. File names can be omitted.",
 	Run:   serve,
 }
 
-type Res struct {
-	Error    error
-	Response string
+const (
+	HtmlType        = "text/html"
+	JsType          = "application/javascript"
+	JsonType        = "application/json"
+	IncludeTagRegex = `<!--#include ([a-z]+)="(\S+)" -->`
+)
+
+type Response struct {
+	Error error
+	Body  string
 }
 
 func serve(cmd *cobra.Command, args []string) {
 	port := config.Port
 
-	http.HandleFunc("/", Handler)
+	http.HandleFunc("/", handler)
 	log.Printf("Server listening on http://localhost:%s/", port)
 	log.Print(http.ListenAndServe(":"+port, nil))
 }
 
-func Handler(w http.ResponseWriter, r *http.Request) {
-	reqUri := joinIndex(r.RequestURI)
-	mime := mimeTypeForFile(reqUri)
-	c := make(chan *Res)
+func handler(w http.ResponseWriter, r *http.Request) {
+	var res *Response
+	reqURI := r.RequestURI
+	c := make(chan *Response)
+	defer close(c)
 
-	var res *Res
-
-	go getData(reqUri, c)
-	res = <-c
-
-	if res.Error != nil {
-		http.Error(w, res.Error.Error(), 404)
-		fmt.Printf("error: %v\n", res.Error)
+	if isDir, err := isDirExist(r.RequestURI); isDir {
+		reqURI = fmt.Sprintf(`%sindex.html`, r.RequestURI)
+	} else {
+		handleErr(err)
 	}
 
-	switch mime.Category {
-	case "html":
+	ext := filepath.Ext(reqURI)
+	mimeType := mime.TypeByExtension(ext)
+	mediatype, _, err := mime.ParseMediaType(mimeType)
+	handleErr(err)
+
+	go getData(reqURI, c)
+	res = <-c
+	handleErr(res.Error)
+
+	switch mediatype {
+	case HtmlType:
 		go res.rewrite(c)
-		routine := Routine{Response: <-c, Include: true, IncludeId: true}
+		res = <-c
+		needsReplaceIncTag, needsReplaceIncId := res.needsReplace()
 
-		for routine.Include && routine.IncludeId {
-			go routine.run(c)
+		for needsReplaceIncTag || needsReplaceIncId {
+			if needsReplaceIncTag {
+				go res.ReplaceIncludeTag(c)
+				res = <-c
+			}
+			if needsReplaceIncId {
+				go res.ReplaceIncludeId(c)
+				res = <-c
+			}
+
+			go res.rewrite(c)
 			res = <-c
+			needsReplaceIncTag, needsReplaceIncId = res.needsReplace()
 		}
-
-	case "asset":
+	case JsType, JsonType:
 		go res.rewrite(c)
 		res = <-c
 	}
 
-	mimeType := fmt.Sprintf(`%s; charset=utf-8`, mime.ContentType)
-
 	w.Header().Set("Content-Type", mimeType)
-	fmt.Fprint(w, res.Response)
+	fmt.Fprint(w, res.Body)
 }
 
-func (res *Res) rewrite(c chan *Res) {
-	path := config.Path
-	str := res.Response
-	buf := []byte(str)
+func (res *Response) rewrite(c chan *Response) {
+	pathes := config.Path
+	stringBody := res.Body
+	bufferedBody := []byte(stringBody)
 
-	if len(path) > 0 {
-		pathMatched := [][][][]byte{}
+	if len(pathes) > 0 {
+		matchPathCount := 0
 
-		for _, v := range path {
-			regPath := regexp.MustCompile(v.K)
-			pathMatched = append(pathMatched, regPath.FindAllSubmatch(buf, 1))
+		for _, v := range pathes {
+			pathRep := regexp.MustCompile(v.K)
+			matchPathCount += len(pathRep.FindAll(bufferedBody, -1))
 		}
-
-		if len(pathMatched) > 0 {
-			for _, v := range path {
-				str = strings.Replace(str, v.K, v.V, -1)
+		if matchPathCount > 0 {
+			for _, v := range pathes {
+				stringBody = strings.Replace(stringBody, v.K, v.V, -1)
 			}
 		}
 	}
-
-	c <- &Res{Error: res.Error, Response: str}
+	c <- &Response{Error: res.Error, Body: stringBody}
 }
 
-func (res *Res) includeReplace(c chan *Res) {
-	regInc := regexp.MustCompile(`<!--#include ([a-z]+)="(\S+)" -->`)
-	str := res.Response
-	resBuf := []byte(str)
-	incMatched := regInc.FindAllSubmatch(resBuf, -1)
+func (res *Response) ReplaceIncludeTag(c chan *Response) {
+	var (
+		err          error
+		bufferedFile []byte
+	)
+	includeTagRep := regexp.MustCompile(IncludeTagRegex)
+	stringBody := res.Body
+	bufferedBody := []byte(stringBody)
+	matchIncludeTags := includeTagRep.FindAllSubmatch(bufferedBody, -1)
 
-	if len(incMatched) > 0 {
-		for _, v := range incMatched {
-			incPath := string(v[2])
-			buf, err := os.ReadFile(incPath)
-
+	if len(matchIncludeTags) > 0 {
+		for _, v := range matchIncludeTags {
+			includeTagPath := string(v[2])
+			bufferedFile, err = os.ReadFile(includeTagPath)
 			handleErr(err)
 
-			incTxt := string(buf)
-			regString := fmt.Sprintf(`<!--#include ([a-z]+)="%s" -->`, incPath)
-			reg := regexp.MustCompile(regString)
-			str = reg.ReplaceAllString(str, incTxt)
-		}
-	}
-
-	c <- &Res{Error: res.Error, Response: str}
-}
-
-func (res *Res) includeIdReplace(c chan *Res) {
-	includeId := config.IncludeId
-	str := res.Response
-	resBuf := []byte(str)
-	incMatched := [][][][]byte{}
-
-	for _, v := range includeId {
-		regString := fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, v.K)
-		regInc := regexp.MustCompile(regString)
-		incMatched = append(incMatched, regInc.FindAllSubmatch(resBuf, 1))
-	}
-
-	if len(includeId) > 0 && len(incMatched) > 0 {
-		for _, v := range includeId {
-			buf, err := os.ReadFile(v.V)
-
-			handleErr(err)
-
-			incTxt := string(buf)
-			regBody := regexp.MustCompile(`<body>([\s\S]*)</body>`)
-			resBody := regBody.FindSubmatch(buf)
-
-			if len(resBody) > 0 {
-				incTxt = string(resBody[1])
+			if err == nil {
+				incTxt := string(bufferedFile)
+				includeTagReg := fmt.Sprintf(`<!--#include ([a-z]+)="%s" -->`, includeTagPath)
+				rep := regexp.MustCompile(includeTagReg)
+				stringBody = rep.ReplaceAllString(stringBody, incTxt)
 			}
-
-			incTag := fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, v.K)
-			reg := regexp.MustCompile(incTag)
-			str = reg.ReplaceAllString(str, incTxt)
 		}
 	}
-
-	c <- &Res{Error: res.Error, Response: str}
+	c <- &Response{Error: err, Body: stringBody}
 }
 
-func getData(reqURI string, c chan *Res) {
-	alternate := config.Alternate
+func (res *Response) ReplaceIncludeId(c chan *Response) {
+	var (
+		err          error
+		bufferedFile []byte
+	)
+	includeIds := config.IncludeId
+	stringBody := res.Body
+	bufferedBody := []byte(stringBody)
+	matchIncludeIdCount := 0
 
+	if len(includeIds) > 0 {
+		for _, v := range includeIds {
+			includeIdTagReg := makeIncludeTag(v.K)
+			includeIdTagRep := regexp.MustCompile(includeIdTagReg)
+			matchIncludeIdCount += len(includeIdTagRep.FindAll(bufferedBody, -1))
+		}
+		if matchIncludeIdCount > 0 {
+			for _, v := range includeIds {
+				bufferedFile, err = os.ReadFile(v.V)
+				handleErr(err)
+
+				if err == nil {
+					stringFile := string(bufferedFile)
+					bodyRep := regexp.MustCompile(`<body>([\s\S]*)</body>`)
+					fileBody := bodyRep.FindSubmatch(bufferedFile)
+
+					if len(fileBody) > 0 {
+						stringFile = string(fileBody[1])
+					}
+					includeIdTagReg := makeIncludeTag(v.K)
+					includeIdTagRep := regexp.MustCompile(includeIdTagReg)
+					stringBody = includeIdTagRep.ReplaceAllString(stringBody, stringFile)
+				}
+			}
+		}
+	}
+	c <- &Response{Error: err, Body: stringBody}
+}
+
+func getData(reqURI string, c chan *Response) {
+	alternates := config.Alternate
 	reqURI = fmt.Sprintf(`.%s`, reqURI)
 
-	if len(alternate) > 0 {
-		for _, v := range alternate {
+	if len(alternates) > 0 {
+		for _, v := range alternates {
 			if strings.Contains(reqURI, v.K) {
 				reqURI = strings.Replace(reqURI, v.K, v.V, 1)
 				break
 			}
 		}
 	}
-
-	buf, err := os.ReadFile(reqURI)
-
-	handleErr(err)
-
-	txt := string(buf)
-
-	c <- &Res{Error: err, Response: txt}
+	bufferedFile, err := os.ReadFile(reqURI)
+	c <- &Response{Error: err, Body: string(bufferedFile)}
 }
 
-func joinIndex(reqURI string) string {
-	isDir, err := dirExist(reqURI)
-
-	handleErr(err)
-
-	if isDir {
-		reqURI = fmt.Sprintf(`%sindex.html`, reqURI)
-	}
-
-	return reqURI
-}
-
-func dirExist(path string) (bool, error) {
+func isDirExist(path string) (bool, error) {
 	currentDir, _ := os.Getwd()
 	path = fmt.Sprintf(`%s%s`, currentDir, path)
 	info, err := os.Stat(path)
@@ -202,11 +212,59 @@ func dirExist(path string) (bool, error) {
 	return true, nil
 }
 
+func (res *Response) needsReplace() (bool, bool) {
+	stringBody := res.Body
+	bufferedBody := []byte(stringBody)
+	includeIds := config.IncludeId
+	matchIncludeIdCount := 0
+	matchIncludeCount := 0
+
+	if len(includeIds) > 0 {
+		for _, v := range includeIds {
+			includeIdTagReg := makeIncludeTag(v.K)
+			includeIdTagRep := regexp.MustCompile(includeIdTagReg)
+			matchIncludeIdCount += len(includeIdTagRep.FindAll(bufferedBody, -1))
+			if isNotFileExist(v.V) {
+				matchIncludeIdCount -= 1
+			}
+		}
+	}
+	includeTagReg := regexp.MustCompile(IncludeTagRegex)
+	matchIncludeTags := includeTagReg.FindAllSubmatch(bufferedBody, -1)
+	matchIncludeCount += len(matchIncludeTags)
+	if matchIncludeCount > 0 {
+		for _, v := range matchIncludeTags {
+			if isNotFileExist(string(v[2])) {
+				matchIncludeCount -= 1
+			}
+		}
+	}
+
+	// return need to do ReplaceIncludeTag(), ReplaceIncludeId()
+	if matchIncludeCount == 0 && matchIncludeIdCount == 0 {
+		return false, false
+	} else if matchIncludeCount == 0 {
+		return false, true
+	} else if matchIncludeIdCount == 0 {
+		return true, false
+	} else {
+		return true, true
+	}
+}
+
+func isNotFileExist(path string) bool {
+	_, err := os.Stat(path)
+	return os.IsNotExist(err)
+}
+
 func handleErr(err error) {
 	if err != nil {
-		fmt.Printf("error: %v\n", err)
-		return
+		log.Printf("Error: %v\n", err)
 	}
+}
+
+func makeIncludeTag(value string) string {
+	return fmt.Sprintf(`<("[^"]*"|'[^']*'|[^'">])*id="%s"("[^"]*"|'[^']*'|[^'">])*></("[^"]*"|'[^']*'|[^'">])*>`, value)
 }
 
 func init() {
