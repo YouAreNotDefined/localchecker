@@ -65,21 +65,21 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	case HtmlType:
 		go res.rewrite(c)
 		res = <-c
-		replaceIncludeTag, replaceIncludeId := res.needsReplace()
+		needsReplaceIncTag, needsReplaceIncId := res.needsReplace()
 
-		for replaceIncludeTag || replaceIncludeId {
-			if replaceIncludeTag {
+		for needsReplaceIncTag || needsReplaceIncId {
+			if needsReplaceIncTag {
 				go res.ReplaceIncludeTag(c)
 				res = <-c
 			}
-			if replaceIncludeId {
+			if needsReplaceIncId {
 				go res.ReplaceIncludeId(c)
 				res = <-c
 			}
 
 			go res.rewrite(c)
 			res = <-c
-			replaceIncludeTag, replaceIncludeId = res.needsReplace()
+			needsReplaceIncTag, needsReplaceIncId = res.needsReplace()
 		}
 	case JsType, JsonType:
 		go res.rewrite(c)
@@ -91,110 +91,106 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (res *Response) rewrite(c chan *Response) {
-	path := config.Path
-	str := res.Body
-	buf := []byte(str)
+	pathes := config.Path
+	stringBody := res.Body
+	bufferedBody := []byte(stringBody)
 
-	if len(path) > 0 {
+	if len(pathes) > 0 {
 		matchPathCount := 0
 
-		for _, v := range path {
-			regPath := regexp.MustCompile(v.K)
-			matchPathCount += len(regPath.FindAll(buf, -1))
+		for _, v := range pathes {
+			pathRep := regexp.MustCompile(v.K)
+			matchPathCount += len(pathRep.FindAll(bufferedBody, -1))
 		}
 		if matchPathCount > 0 {
-			for _, v := range path {
-				str = strings.Replace(str, v.K, v.V, -1)
+			for _, v := range pathes {
+				stringBody = strings.Replace(stringBody, v.K, v.V, -1)
 			}
 		}
 	}
-	c <- &Response{Error: res.Error, Body: str}
+	c <- &Response{Error: res.Error, Body: stringBody}
 }
 
 func (res *Response) ReplaceIncludeTag(c chan *Response) {
 	var (
-		err error
-		buf []byte
+		err          error
+		bufferedFile []byte
 	)
-	regInc := regexp.MustCompile(IncludeTagRegex)
-	str := res.Body
-	resBuf := []byte(str)
-	matchIncludeTags := regInc.FindAllSubmatch(resBuf, -1)
+	includeTagRep := regexp.MustCompile(IncludeTagRegex)
+	stringBody := res.Body
+	bufferedBody := []byte(stringBody)
+	matchIncludeTags := includeTagRep.FindAllSubmatch(bufferedBody, -1)
 
 	if len(matchIncludeTags) > 0 {
 		for _, v := range matchIncludeTags {
-			incPath := string(v[2])
-			buf, err = os.ReadFile(incPath)
+			includeTagPath := string(v[2])
+			bufferedFile, err = os.ReadFile(includeTagPath)
 			handleErr(err)
 
 			if err == nil {
-				incTxt := string(buf)
-				regString := fmt.Sprintf(`<!--#include ([a-z]+)="%s" -->`, incPath)
-				reg := regexp.MustCompile(regString)
-				str = reg.ReplaceAllString(str, incTxt)
+				incTxt := string(bufferedFile)
+				includeTagReg := fmt.Sprintf(`<!--#include ([a-z]+)="%s" -->`, includeTagPath)
+				rep := regexp.MustCompile(includeTagReg)
+				stringBody = rep.ReplaceAllString(stringBody, incTxt)
 			}
 		}
 	}
-
-	c <- &Response{Error: err, Body: str}
+	c <- &Response{Error: err, Body: stringBody}
 }
 
 func (res *Response) ReplaceIncludeId(c chan *Response) {
 	var (
-		err error
-		buf []byte
+		err          error
+		bufferedFile []byte
 	)
-	includeId := config.IncludeId
-	str := res.Body
-	resBuf := []byte(str)
-	matchCountId := 0
+	includeIds := config.IncludeId
+	stringBody := res.Body
+	bufferedBody := []byte(stringBody)
+	matchIncludeIdCount := 0
 
-	if len(includeId) > 0 {
-		for _, v := range includeId {
-			regString := makeIncludeTag(v.K)
-			regInc := regexp.MustCompile(regString)
-			matchCountId += len(regInc.FindAll(resBuf, -1))
+	if len(includeIds) > 0 {
+		for _, v := range includeIds {
+			includeIdTagReg := makeIncludeTag(v.K)
+			includeIdTagRep := regexp.MustCompile(includeIdTagReg)
+			matchIncludeIdCount += len(includeIdTagRep.FindAll(bufferedBody, -1))
 		}
-
-		if matchCountId > 0 {
-			for _, v := range includeId {
-				buf, err = os.ReadFile(v.V)
+		if matchIncludeIdCount > 0 {
+			for _, v := range includeIds {
+				bufferedFile, err = os.ReadFile(v.V)
 				handleErr(err)
 
 				if err == nil {
-					incTxt := string(buf)
-					regBody := regexp.MustCompile(`<body>([\s\S]*)</body>`)
-					resBody := regBody.FindSubmatch(buf)
+					stringFile := string(bufferedFile)
+					bodyRep := regexp.MustCompile(`<body>([\s\S]*)</body>`)
+					fileBody := bodyRep.FindSubmatch(bufferedFile)
 
-					if len(resBody) > 0 {
-						incTxt = string(resBody[1])
+					if len(fileBody) > 0 {
+						stringFile = string(fileBody[1])
 					}
-					incTag := makeIncludeTag(v.K)
-					reg := regexp.MustCompile(incTag)
-					str = reg.ReplaceAllString(str, incTxt)
+					includeIdTagReg := makeIncludeTag(v.K)
+					includeIdTagRep := regexp.MustCompile(includeIdTagReg)
+					stringBody = includeIdTagRep.ReplaceAllString(stringBody, stringFile)
 				}
 			}
 		}
 	}
-	c <- &Response{Error: err, Body: str}
+	c <- &Response{Error: err, Body: stringBody}
 }
 
 func getData(reqURI string, c chan *Response) {
-	alternate := config.Alternate
+	alternates := config.Alternate
 	reqURI = fmt.Sprintf(`.%s`, reqURI)
 
-	if len(alternate) > 0 {
-		for _, v := range alternate {
+	if len(alternates) > 0 {
+		for _, v := range alternates {
 			if strings.Contains(reqURI, v.K) {
 				reqURI = strings.Replace(reqURI, v.K, v.V, 1)
 				break
 			}
 		}
 	}
-
-	buf, err := os.ReadFile(reqURI)
-	txt := string(buf)
-	c <- &Response{Error: err, Body: txt}
+	bufferedFile, err := os.ReadFile(reqURI)
+	c <- &Response{Error: err, Body: string(bufferedFile)}
 }
 
 func isDirExist(path string) (bool, error) {
@@ -217,40 +213,39 @@ func isDirExist(path string) (bool, error) {
 }
 
 func (res *Response) needsReplace() (bool, bool) {
-	resStr := res.Body
-	resBuf := []byte(resStr)
-	includeId := config.IncludeId
-	matchCountId := 0
-	matchCountInc := 0
+	stringBody := res.Body
+	bufferedBody := []byte(stringBody)
+	includeIds := config.IncludeId
+	matchIncludeIdCount := 0
+	matchIncludeCount := 0
 
-	if len(includeId) > 0 {
-		for _, v := range includeId {
-			regString := makeIncludeTag(v.K)
-			regIncId := regexp.MustCompile(regString)
-			matchCountId += len(regIncId.FindAll(resBuf, -1))
+	if len(includeIds) > 0 {
+		for _, v := range includeIds {
+			includeIdTagReg := makeIncludeTag(v.K)
+			includeIdTagRep := regexp.MustCompile(includeIdTagReg)
+			matchIncludeIdCount += len(includeIdTagRep.FindAll(bufferedBody, -1))
 			if isNotFileExist(v.V) {
-				matchCountId -= 1
+				matchIncludeIdCount -= 1
 			}
 		}
 	}
-
-	regInc := regexp.MustCompile(IncludeTagRegex)
-	matchIncludeTags := regInc.FindAllSubmatch(resBuf, -1)
-	matchCountInc += len(matchIncludeTags)
-	if matchCountInc > 0 {
+	includeTagReg := regexp.MustCompile(IncludeTagRegex)
+	matchIncludeTags := includeTagReg.FindAllSubmatch(bufferedBody, -1)
+	matchIncludeCount += len(matchIncludeTags)
+	if matchIncludeCount > 0 {
 		for _, v := range matchIncludeTags {
 			if isNotFileExist(string(v[2])) {
-				matchCountInc -= 1
+				matchIncludeCount -= 1
 			}
 		}
 	}
 
 	// return need to do ReplaceIncludeTag(), ReplaceIncludeId()
-	if matchCountInc == 0 && matchCountId == 0 {
+	if matchIncludeCount == 0 && matchIncludeIdCount == 0 {
 		return false, false
-	} else if matchCountInc == 0 {
+	} else if matchIncludeCount == 0 {
 		return false, true
-	} else if matchCountId == 0 {
+	} else if matchIncludeIdCount == 0 {
 		return true, false
 	} else {
 		return true, true
